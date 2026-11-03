@@ -20,9 +20,9 @@ class Database:
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     user_id INTEGER PRIMARY KEY,
-                    first_name TEXT,
+                    display_name TEXT,
                     username TEXT,
-                    length INTEGER DEFAULT 10,
+                    length INTEGER DEFAULT 0,
                     last_grow INTEGER DEFAULT 0
                 )
             """)
@@ -37,29 +37,30 @@ class Database:
         finally:
             conn.close()
 
-    def get_user(self, user_id: int, first_name: str, username: str) -> Dict[str, Any]:
+    def get_user(self, user_id: int, display_name: str, username: str) -> Dict[str, Any]:
         conn = self._get_conn()
         try:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
             row = cursor.fetchone()
             if row:
+                # Update display name if changed
                 cursor.execute("""
-                    UPDATE users SET first_name = ?, username = ? WHERE user_id = ?
-                """, (first_name or "Гравець", username or "", user_id))
+                    UPDATE users SET display_name = ?, username = ? WHERE user_id = ?
+                """, (display_name or "Анонім", username or "", user_id))
                 conn.commit()
                 return dict(row)
             
             cursor.execute("""
-                INSERT INTO users (user_id, first_name, username, length, last_grow)
-                VALUES (?, ?, ?, 10, 0)
-            """, (user_id, first_name or "Гравець", username or ""))
+                INSERT INTO users (user_id, display_name, username, length, last_grow)
+                VALUES (?, ?, ?, 0, 0)
+            """, (user_id, display_name or "Анонім", username or ""))
             conn.commit()
             return {
                 "user_id": user_id,
-                "first_name": first_name or "Гравець",
+                "display_name": display_name or "Анонім",
                 "username": username or "",
-                "length": 10,
+                "length": 0,
                 "last_grow": 0
             }
         finally:
@@ -74,19 +75,19 @@ class Database:
         finally:
             conn.close()
 
-    def set_length(self, user_id: int, length: int):
+    def update_grow(self, user_id: int, new_length: int):
         now = int(time.time())
         conn = self._get_conn()
         try:
             cursor = conn.cursor()
             cursor.execute("""
                 UPDATE users SET length = ?, last_grow = ? WHERE user_id = ?
-            """, (max(0, length), now, user_id))
+            """, (max(0, new_length), now, user_id))
             conn.commit()
         finally:
             conn.close()
 
-    def get_top(self, chat_id: Optional[int] = None, limit: int = 10) -> List[Dict[str, Any]]:
+    def get_top_in_chat(self, chat_id: Optional[int], limit: int = 10) -> List[Dict[str, Any]]:
         conn = self._get_conn()
         try:
             cursor = conn.cursor()
@@ -105,10 +106,3 @@ class Database:
             return [dict(r) for r in cursor.fetchall()]
         finally:
             conn.close()
-
-    def get_rank(self, user_id: int, chat_id: Optional[int] = None) -> int:
-        top = self.get_top(chat_id=chat_id, limit=100)
-        for i, u in enumerate(top, 1):
-            if u["user_id"] == user_id:
-                return i
-        return len(top) + 1
