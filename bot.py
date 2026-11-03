@@ -23,7 +23,7 @@ BASE_DIR = Path(__file__).resolve().parent
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 PORT = int(os.getenv("PORT", "8080"))
 
-# Admin ID (твій Telegram ID для тестів і видачі сантиметрів)
+# Admin ID (твій Telegram ID)
 ADMIN_IDS = [1743742401]
 
 GROW_COOLDOWN = 24 * 3600  # 24 hours
@@ -137,13 +137,13 @@ def do_casino(user, chat, bet_amount: int) -> str:
         db.register_chat(chat.id, user.id)
 
     if bet_amount <= 0:
-        return f"{name}, ставка повинна бути від 1 см! Наприклад: <code>ставка 5</code>"
+        bet_amount = 5
 
     if bet_amount > 15:
         return f"{name}, максимальна ставка в казино — 15 см!"
 
     if u["length"] < bet_amount:
-        return f"{name}, у тебе немає стільки сантиметрів! Твій розмір: {u['length']} см."
+        return f"{name}, у тебе замало сантиметрів! Твій розмір: {u['length']} см (а ставка {bet_amount} см)."
 
     now = int(time.time())
     diff = now - u["last_casino"]
@@ -190,10 +190,10 @@ def do_duel(attacker, defender, chat, bet_amount: int) -> str:
     bet_amount = min(bet_amount, 10)
 
     if a_u["length"] < bet_amount:
-        return f"{a_name}, у тебе замало сантиметрів для такої дуелі ({a_u['length']} см)!"
+        return f"{a_name}, у тебе замало сантиметрів ({a_u['length']} см)!"
 
     if d_u["length"] < bet_amount:
-        return f"{d_name} занадто малий для такої ставки ({d_u['length']} см)!"
+        return f"{d_name} має замало сантиметрів для такої дуелі ({d_u['length']} см)!"
 
     now = int(time.time())
     diff = now - a_u["last_duel"]
@@ -234,19 +234,19 @@ async def handle_start(msg: Message):
 
     text = (
         f"Привіт, {name}!\n\n"
-        f"Користуйся зручними кнопками внизу або командами в чаті:\n\n"
+        f"Користуйся кнопками внизу або командами в чаті:\n"
         f"• «🍆 Пісюн» — поміряти розмір раз на добу\n"
-        f"• «🎰 Казино» — швидка ставка 5 см (або напиши: <code>ставка 10</code>)\n"
+        f"• «🎰 Казино» — гра на 5 см (або напиши: <code>ставка 10</code>)\n"
         f"• «🥊 Дуель» — бій із другом (відповідай на повідомлення друга словом: <code>дуель 3</code>)\n"
         f"• «🏆 Топ 10» — рейтинг лідерів чату"
     )
     await msg.answer(text, reply_markup=get_reply_keyboard(), parse_mode="HTML")
 
-# Admin command: /give [см] (додати собі або другу у відповідь на його повідомлення)
-@router.message(F.text.lower().regexp(r'^(?:/|!)?(?:give|додати|бонус|накрутити)\s*(\d+)$'))
+# Admin command: /give (додати собі або другу)
+@router.message(F.text.func(lambda t: any(k in t.lower() for k in ["give", "додати", "бонус", "накрутити"])))
 async def handle_admin_give(msg: Message):
     if msg.from_user.id not in ADMIN_IDS:
-        return  # Тільки ти маєш право додавати сантиметри!
+        return
 
     match = re.search(r'\d+', msg.text)
     amount = int(match.group()) if match else 20
@@ -262,7 +262,6 @@ async def handle_admin_give(msg: Message):
         db.register_chat(msg.chat.id, target.id)
 
     new_len = t_u["length"] + amount
-    # Оновлюємо довжину без зміни таймера
     conn = db._get_conn()
     try:
         cursor = conn.cursor()
@@ -273,7 +272,7 @@ async def handle_admin_give(msg: Message):
 
     await msg.answer(f"👑 <b>Адмін-бонус:</b> {t_name} отримав <b>+{amount} см</b>!\nТепер його розмір: <b>{new_len} см</b> {get_badge(new_len)}", parse_mode="HTML")
 
-# Admin command: /reset (скинути таймери для миттєвого тесту)
+# Admin command: /reset (скинути таймери)
 @router.message(Command("reset"))
 async def handle_admin_reset(msg: Message):
     if msg.from_user.id not in ADMIN_IDS:
@@ -285,65 +284,53 @@ async def handle_admin_reset(msg: Message):
         conn.commit()
     finally:
         conn.close()
-    await msg.answer("⚡ <b>Таймери скинуто!</b> Можна знову ростити, грати в казино та дуелитися прямо зараз.", parse_mode="HTML")
+    await msg.answer("⚡ <b>Таймери скинуто!</b> Можна знову ростити, грати в казино та дуелитися.", parse_mode="HTML")
 
 # Grow
 @router.message(Command("grow"))
-@router.message(F.text.lower().in_([
-    "🍆 пісюн", "пісюн", "!пісюн", "/пісюн", 
-    "песюн", "!песюн", "/песюн", "ростити", "поміряти"
-]))
+@router.message(F.text.func(lambda t: any(k in t.lower() for k in ["пісюн", "песюн", "ростити", "поміряти"])))
 async def handle_grow(msg: Message):
     reply = do_grow(msg.from_user, msg.chat)
     await msg.answer(reply, reply_markup=get_reply_keyboard())
 
 # Top
 @router.message(Command("top"))
-@router.message(F.text.lower().in_([
-    "🏆 топ 10", "топ 10", "!топ 10", "топ", "!топ", "/топ"
-]))
+@router.message(F.text.func(lambda t: "топ" in t.lower() or "top" in t.lower()))
 async def handle_top(msg: Message):
     reply = do_top(msg.chat)
     await msg.answer(reply, reply_markup=get_reply_keyboard())
 
 # My Size
 @router.message(Command("my"))
-@router.message(F.text.lower().in_([
-    "📏 мій розмір", "мій розмір", "розмір", "!розмір", "/розмір", "мій песюн"
-]))
+@router.message(F.text.func(lambda t: "розмір" in t.lower() or "мій песюн" in t.lower() or "мій пісюн" in t.lower()))
 async def handle_my(msg: Message):
     reply = do_my(msg.from_user, msg.chat)
     await msg.answer(reply, reply_markup=get_reply_keyboard())
 
-# Casino Button / Command
-@router.message(F.text == "🎰 Казино (5 см)")
-@router.message(F.text.lower().regexp(r'^(?:!|/)?(?:ставка|казино|bet)\s*(\d+)?$'))
+# Casino Button / Command (ставка, казино, bet)
+@router.message(F.text.func(lambda t: any(k in t.lower() for k in ["казино", "ставка", "bet"])))
 async def handle_casino(msg: Message):
     match = re.search(r'\d+', msg.text)
     bet = int(match.group()) if match else 5
     reply = do_casino(msg.from_user, msg.chat, bet)
     await msg.answer(reply, reply_markup=get_reply_keyboard(), parse_mode="HTML")
 
-# Duel Info Button
-@router.message(F.text == "🥊 Дуель (інфо)")
-async def handle_duel_info(msg: Message):
-    text = (
-        f"🥊 <b>Як викликати друга на дуель?</b>\n\n"
-        f"1. Зроби <b>відповідь (Reply)</b> на будь-яке повідомлення друга в чаті.\n"
-        f"2. Напиши слово: <code>дуель 3</code> (або просто <code>дуель</code>).\n"
-        f"3. Бот кине кубики — переможець відбере сантиметри в суперника!"
-    )
-    await msg.answer(text, reply_markup=get_reply_keyboard(), parse_mode="HTML")
-
-# Duel execution (Reply to another user)
-@router.message(F.text.lower().regexp(r'^(?:!|/)?(?:дуель|duel|бій)\s*(\d+)?$'))
+# Duel Info Button / Duel execution
+@router.message(F.text.func(lambda t: any(k in t.lower() for k in ["дуель", "duel", "бій"])))
 async def handle_duel(msg: Message):
     if msg.chat.type not in ("group", "supergroup"):
         await msg.answer("🥊 Дуелі доступні тільки у спільних групах з друзями!")
         return
 
+    # Якщо просто натиснули кнопку або написали без відповіді
     if not msg.reply_to_message or not msg.reply_to_message.from_user:
-        await msg.answer("⚠️ Щоб викликати когось на дуель, пиши <code>дуель</code> у відповідь (Reply) на його повідомлення!", parse_mode="HTML")
+        text = (
+            f"🥊 <b>Як викликати друга на дуель?</b>\n\n"
+            f"1. Зроби <b>відповідь (Reply)</b> на повідомлення друга в чаті.\n"
+            f"2. Напиши: <code>дуель 3</code> (або просто <code>дуель</code>).\n"
+            f"3. Переможець забере сантиметри в суперника!"
+        )
+        await msg.answer(text, reply_markup=get_reply_keyboard(), parse_mode="HTML")
         return
 
     match = re.search(r'\d+', msg.text)
