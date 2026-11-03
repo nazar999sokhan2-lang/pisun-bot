@@ -9,7 +9,11 @@ from pathlib import Path
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.filters import CommandStart, Command
-from aiogram.types import Message
+from aiogram.types import (
+    Message,
+    ReplyKeyboardMarkup,
+    KeyboardButton
+)
 
 from database import Database
 
@@ -24,6 +28,17 @@ logger = logging.getLogger("PisunBot")
 
 db = Database(BASE_DIR / "game.db")
 router = Router()
+
+# Bottom Keyboard Window (ReplyKeyboardMarkup)
+def get_reply_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="🍆 Пісюн"), KeyboardButton(text="📏 Мій розмір")],
+            [KeyboardButton(text="🏆 Топ 10")]
+        ],
+        resize_keyboard=True,
+        is_persistent=True
+    )
 
 def format_time_left(seconds: int) -> str:
     hours = seconds // 3600
@@ -103,35 +118,42 @@ async def handle_start(msg: Message):
 
     text = (
         f"Привіт, {name}!\n\n"
-        f"Тисни /grow або напиши слово «пісюн», щоб поміряти розмір раз на добу.\n"
-        f"Напиши /top або «топ», щоб переглянути рейтинг чату!"
+        f"Тисни кнопку «🍆 Пісюн» нижче, щоб поміряти розмір раз на добу.\n"
+        f"Тисни «🏆 Топ 10», щоб переглянути рейтинг чату!"
     )
-    await msg.answer(text)
+    await msg.answer(text, reply_markup=get_reply_keyboard())
 
-# Grow triggers: /grow, пісюн, песюн
+# Grow triggers: /grow, 🍆 Пісюн, пісюн, !пісюн, песюн, !песюн
 @router.message(Command("grow"))
-@router.message(F.text.lower().in_(["пісюн", "песюн", "ростити", "поміряти", "писюн"]))
+@router.message(F.text.lower().in_([
+    "🍆 пісюн", "пісюн", "!пісюн", "/пісюн", 
+    "песюн", "!песюн", "/песюн", "ростити", "🍆 ростити", "поміряти", "🍆 поміряти"
+]))
 async def handle_grow(msg: Message):
     reply = do_grow_logic(msg.from_user, msg.chat)
-    await msg.answer(reply)
+    await msg.answer(reply, reply_markup=get_reply_keyboard())
 
-# Top triggers: /top, топ, топ 10
+# Top triggers: /top, 🏆 Топ 10, топ, !топ, топ 10, !топ 10
 @router.message(Command("top"))
-@router.message(F.text.lower().in_(["топ", "топ 10", "топ10", "лідери"]))
+@router.message(F.text.lower().in_([
+    "🏆 топ 10", "топ 10", "!топ 10", "топ", "!топ", "/топ", "🏆 топ гравців", "топ гравців"
+]))
 async def handle_top(msg: Message):
     reply = do_top_logic(msg.chat)
-    await msg.answer(reply)
+    await msg.answer(reply, reply_markup=get_reply_keyboard())
 
-# My size triggers: /my, розмір
+# My size triggers: /my, 📏 Мій розмір, розмір, !розмір
 @router.message(Command("my"))
-@router.message(F.text.lower().in_(["розмір", "мій розмір", "мій пісюн", "мій песюн"]))
+@router.message(F.text.lower().in_([
+    "📏 мій розмір", "мій розмір", "розмір", "!розмір", "/розмір", "мій песюн", "мій пісюн"
+]))
 async def handle_my(msg: Message):
     reply = do_my_logic(msg.from_user, msg.chat)
-    await msg.answer(reply)
+    await msg.answer(reply, reply_markup=get_reply_keyboard())
 
 # --- Render Health Check Server ---
 async def health(request):
-    return web.Response(text="OK, Ebobot clone is alive 24/7!", status=200)
+    return web.Response(text="OK, PisunBot 2.0 with Bottom Keyboard is alive 24/7!", status=200)
 
 async def run_web():
     app = web.Application()
