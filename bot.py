@@ -11,8 +11,9 @@ from aiogram import Bot, Dispatcher, F, Router
 from aiogram.filters import CommandStart, Command
 from aiogram.types import (
     Message,
-    ReplyKeyboardMarkup,
-    KeyboardButton
+    CallbackQuery,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton
 )
 
 from database import Database
@@ -29,7 +30,6 @@ logger = logging.getLogger("PisunBot")
 db = Database(BASE_DIR / "game.db")
 router = Router()
 
-# Visual generator
 def make_visual(length: int) -> str:
     bars = max(1, min(24, length // 2))
     return f"8{'=' * bars}D"
@@ -42,9 +42,7 @@ def format_time(seconds: int) -> str:
     return f"{mins} хв"
 
 def roll_growth():
-    # 75% positive, 25% negative
     if random.random() < 0.75:
-        # Rare crit
         if random.random() < 0.08:
             delta = random.randint(11, 16)
             return delta, f"🔥 <b>КРИТИЧНИЙ УСПІХ!</b> Знайшов секретну мазь: <b>+{delta} см</b>!"
@@ -67,63 +65,47 @@ def roll_growth():
         ]
         return delta, random.choice(phrases)
 
-def get_menu():
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="🍆 Поміряти"), KeyboardButton(text="📏 Мій розмір")],
-            [KeyboardButton(text="🏆 Топ чату")]
-        ],
-        resize_keyboard=True
+# Inline Keyboard directly attached to messages
+def get_inline_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🍆 Поміряти", callback_data="btn_grow"),
+                InlineKeyboardButton(text="📏 Мій розмір", callback_data="btn_my")
+            ],
+            [
+                InlineKeyboardButton(text="🏆 Топ чату", callback_data="btn_top")
+            ]
+        ]
     )
 
-@router.message(CommandStart())
-async def cmd_start(msg: Message):
-    user = msg.from_user
-    db.get_user(user.id, user.first_name, user.username)
-    if msg.chat.type in ("group", "supergroup"):
-        db.register_chat(msg.chat.id, user.id)
-
-    text = (
-        f"👋 <b>Привіт, {user.first_name}!</b>\n\n"
-        f"Це простий та веселий бот для вимірювання розміру з друзями.\n\n"
-        f"🍆 <b>Правила:</b>\n"
-        f"• Раз на добу тисни <b>«🍆 Поміряти»</b> (розмір може вирости або зменшитися).\n"
-        f"• Тисни <b>«🏆 Топ чату»</b>, щоб побачити, хто лідер серед друзів!\n\n"
-        f"Початковий розмір: <b>10 см</b>. Тисни кнопку нижче!"
-    )
-    await msg.answer(text, reply_markup=get_menu(), parse_mode="HTML")
-
-@router.message(F.text == "🍆 Поміряти")
-@router.message(Command("grow"))
-async def cmd_grow(msg: Message):
-    user = msg.from_user
+# --- Core Business Logic Helpers ---
+def do_grow(user, chat):
     u = db.get_user(user.id, user.first_name, user.username)
-    if msg.chat.type in ("group", "supergroup"):
-        db.register_chat(msg.chat.id, user.id)
+    if chat.type in ("group", "supergroup"):
+        db.register_chat(chat.id, user.id)
 
     now = int(time.time())
     diff = now - u["last_grow"]
 
     if diff < COOLDOWN_SECONDS:
         left = COOLDOWN_SECONDS - diff
-        await msg.answer(
+        return (
             f"⏳ <b>{user.first_name}</b>, ти вже міряв сьогодні!\n\n"
             f"📏 Твій розмір: <b>{u['length']} см</b>\n"
             f"<code>{make_visual(u['length'])}</code>\n\n"
-            f"Наступна спроба через: <b>{format_time(left)}</b>",
-            parse_mode="HTML"
+            f"Наступна спроба через: <b>{format_time(left)}</b>"
         )
-        return
 
     delta, event_text = roll_growth()
     new_len = max(0, u["length"] + delta)
     db.set_length(user.id, new_len)
 
     visual = make_visual(new_len)
-    chat_id = msg.chat.id if msg.chat.type in ("group", "supergroup") else None
+    chat_id = chat.id if chat.type in ("group", "supergroup") else None
     rank = db.get_rank(user.id, chat_id)
 
-    res = (
+    return (
         f"🍆 <b>Результат вимірювання: {user.first_name}</b>\n\n"
         f"{event_text}\n\n"
         f"📏 Новий розмір: <b>{new_len} см</b>\n"
@@ -131,17 +113,13 @@ async def cmd_grow(msg: Message):
         f"🏆 Місце в топі: <b>#{rank}</b>\n"
         f"<i>(наступний вимір через 24 години)</i>"
     )
-    await msg.answer(res, parse_mode="HTML")
 
-@router.message(F.text == "📏 Мій розмір")
-@router.message(Command("my"))
-async def cmd_my(msg: Message):
-    user = msg.from_user
+def do_my(user, chat):
     u = db.get_user(user.id, user.first_name, user.username)
-    if msg.chat.type in ("group", "supergroup"):
-        db.register_chat(msg.chat.id, user.id)
+    if chat.type in ("group", "supergroup"):
+        db.register_chat(chat.id, user.id)
 
-    chat_id = msg.chat.id if msg.chat.type in ("group", "supergroup") else None
+    chat_id = chat.id if chat.type in ("group", "supergroup") else None
     rank = db.get_rank(user.id, chat_id)
     now = int(time.time())
     diff = now - u["last_grow"]
@@ -152,24 +130,20 @@ async def cmd_my(msg: Message):
         left = COOLDOWN_SECONDS - diff
         status_line = f"⏳ Наступна спроба через: <b>{format_time(left)}</b>"
 
-    text = (
+    return (
         f"👤 <b>Профіль: {user.first_name}</b>\n\n"
         f"📏 Розмір: <b>{u['length']} см</b>\n"
         f"<code>{make_visual(u['length'])}</code>\n\n"
         f"🏆 Місце в топі: <b>#{rank}</b>\n"
         f"{status_line}"
     )
-    await msg.answer(text, parse_mode="HTML")
 
-@router.message(F.text == "🏆 Топ чату")
-@router.message(Command("top"))
-async def cmd_top(msg: Message):
-    chat_id = msg.chat.id if msg.chat.type in ("group", "supergroup") else None
+def do_top(chat):
+    chat_id = chat.id if chat.type in ("group", "supergroup") else None
     top = db.get_top(chat_id=chat_id, limit=10)
 
     if not top:
-        await msg.answer("🏆 Топ поки що порожній! Натисніть «🍆 Поміряти».")
-        return
+        return "🏆 Топ поки що порожній! Натисніть «🍆 Поміряти»."
 
     medals = ["🥇", "🥈", "🥉"]
     title_label = "ЧАТУ" if chat_id else "ГЛОБАЛЬНИЙ"
@@ -180,11 +154,64 @@ async def cmd_top(msg: Message):
         name = p["first_name"] or p["username"] or "Анонім"
         lines.append(f"{pos} <b>{name}</b> — <b>{p['length']} см</b>")
 
-    await msg.answer("\n".join(lines), parse_mode="HTML")
+    return "\n".join(lines)
 
-# Render 24/7 web ping handler
+# --- Message Handlers ---
+@router.message(CommandStart())
+async def cmd_start(msg: Message):
+    user = msg.from_user
+    db.get_user(user.id, user.first_name, user.username)
+    if msg.chat.type in ("group", "supergroup"):
+        db.register_chat(msg.chat.id, user.id)
+
+    text = (
+        f"👋 <b>Привіт, {user.first_name}!</b>\n\n"
+        f"Це бот для змагання розмірами в чаті.\n\n"
+        f"🍆 Тисни <b>«Поміряти»</b> раз на добу під цим повідомленням!\n"
+        f"Початковий розмір: <b>10 см</b>."
+    )
+    await msg.answer(text, reply_markup=get_inline_keyboard(), parse_mode="HTML")
+
+@router.message(Command("grow"))
+@router.message(F.text == "🍆 Поміряти")
+async def cmd_grow(msg: Message):
+    res = do_grow(msg.from_user, msg.chat)
+    await msg.answer(res, reply_markup=get_inline_keyboard(), parse_mode="HTML")
+
+@router.message(Command("my"))
+@router.message(F.text == "📏 Мій розмір")
+async def cmd_my(msg: Message):
+    res = do_my(msg.from_user, msg.chat)
+    await msg.answer(res, reply_markup=get_inline_keyboard(), parse_mode="HTML")
+
+@router.message(Command("top"))
+@router.message(F.text == "🏆 Топ чату")
+async def cmd_top(msg: Message):
+    res = do_top(msg.chat)
+    await msg.answer(res, reply_markup=get_inline_keyboard(), parse_mode="HTML")
+
+# --- Inline Button Clicks (Callback Queries) ---
+@router.callback_query(F.data == "btn_grow")
+async def cb_grow(call: CallbackQuery):
+    res = do_grow(call.from_user, call.message.chat)
+    await call.message.answer(res, reply_markup=get_inline_keyboard(), parse_mode="HTML")
+    await call.answer()
+
+@router.callback_query(F.data == "btn_my")
+async def cb_my(call: CallbackQuery):
+    res = do_my(call.from_user, call.message.chat)
+    await call.message.answer(res, reply_markup=get_inline_keyboard(), parse_mode="HTML")
+    await call.answer()
+
+@router.callback_query(F.data == "btn_top")
+async def cb_top(call: CallbackQuery):
+    res = do_top(call.message.chat)
+    await call.message.answer(res, reply_markup=get_inline_keyboard(), parse_mode="HTML")
+    await call.answer()
+
+# --- Render 24/7 web ping handler ---
 async def health(request):
-    return web.Response(text="OK, PisunBot 2.0 is alive 24/7!", status=200)
+    return web.Response(text="OK, PisunBot 2.0 with Inline buttons is alive 24/7!", status=200)
 
 async def run_web():
     app = web.Application()
