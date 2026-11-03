@@ -13,7 +13,8 @@ from aiogram.filters import CommandStart, Command
 from aiogram.types import (
     Message,
     ReplyKeyboardMarkup,
-    KeyboardButton
+    KeyboardButton,
+    BotCommand
 )
 
 from database import Database
@@ -27,8 +28,8 @@ PORT = int(os.getenv("PORT", "8080"))
 ADMIN_IDS = [1743742401]
 
 GROW_COOLDOWN = 24 * 3600  # 24 hours
-CASINO_COOLDOWN = 5 * 60   # 5 minutes
-DUEL_COOLDOWN = 10 * 60    # 10 minutes
+CASINO_COOLDOWN = 3 * 60   # 3 minutes
+DUEL_COOLDOWN = 5 * 60     # 5 minutes
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s]: %(message)s")
 logger = logging.getLogger("PisunBot")
@@ -58,9 +59,9 @@ def format_time_left(seconds: int) -> str:
 def get_reply_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="🍆 Пісюн"), KeyboardButton(text="📏 Мій розмір")],
-            [KeyboardButton(text="🎰 Казино (5 см)"), KeyboardButton(text="🥊 Дуель (інфо)")],
-            [KeyboardButton(text="🏆 Топ 10")]
+            [KeyboardButton(text="🍆 Ростити"), KeyboardButton(text="📏 Мій розмір")],
+            [KeyboardButton(text="🎰 Казино (5 см)"), KeyboardButton(text="⚔️ Дуель (інфо)")],
+            [KeyboardButton(text="🏆 Топ гравців")]
         ],
         resize_keyboard=True,
         is_persistent=True
@@ -74,7 +75,7 @@ def do_grow(user, chat) -> str:
         db.register_chat(chat.id, user.id)
 
     now = int(time.time())
-    diff = now - u["last_grow"]
+    diff = now - u.get("last_grow", 0)
 
     if diff < GROW_COOLDOWN:
         left = GROW_COOLDOWN - diff
@@ -85,7 +86,7 @@ def do_grow(user, chat) -> str:
     else:
         delta = -random.randint(1, 4)
 
-    new_len = max(0, u["length"] + delta)
+    new_len = max(0, u.get("length", 0) + delta)
     db.update_grow(user.id, new_len)
     badge = get_badge(new_len)
 
@@ -105,8 +106,8 @@ def do_top(chat) -> str:
     lines = ["Топ 10 песюнiв:\n"]
     for i, u in enumerate(top, 1):
         display = u["display_name"] or u["username"] or "Анонім"
-        badge = get_badge(u["length"])
-        lines.append(f"{i}. {display} — {u['length']} см {badge}")
+        badge = get_badge(u.get("length", 0))
+        lines.append(f"{i}. {display} — {u.get('length', 0)} см {badge}")
 
     return "\n".join(lines)
 
@@ -118,8 +119,9 @@ def do_my(user, chat) -> str:
         db.register_chat(chat.id, user.id)
 
     now = int(time.time())
-    diff = now - u["last_grow"]
-    badge = get_badge(u["length"])
+    diff = now - u.get("last_grow", 0)
+    cur_len = u.get("length", 0)
+    badge = get_badge(cur_len)
 
     if diff >= GROW_COOLDOWN:
         status = "можна міряти прямо зараз!"
@@ -127,7 +129,7 @@ def do_my(user, chat) -> str:
         left = GROW_COOLDOWN - diff
         status = f"до виміру: {format_time_left(left)}"
 
-    return f"{name}, твій песюн зараз: {u['length']} см {badge} ({status})."
+    return f"{name}, твій песюн зараз: {cur_len} см {badge} ({status})."
 
 # --- Logic: Casino ---
 def do_casino(user, chat, bet_amount: int) -> str:
@@ -136,24 +138,26 @@ def do_casino(user, chat, bet_amount: int) -> str:
     if chat.type in ("group", "supergroup"):
         db.register_chat(chat.id, user.id)
 
+    cur_len = u.get("length", 0)
+
     if bet_amount <= 0:
         bet_amount = 5
 
-    if bet_amount > 15:
-        return f"{name}, максимальна ставка в казино — 15 см!"
+    if bet_amount > 20:
+        return f"{name}, максимальна ставка в казино — 20 см!"
 
-    if u["length"] < bet_amount:
-        return f"{name}, у тебе замало сантиметрів! Твій розмір: {u['length']} см (а ставка {bet_amount} см)."
+    if cur_len < bet_amount:
+        return f"{name}, у тебе замало сантиметрів! Твій розмір: {cur_len} см, а ставка: {bet_amount} см."
 
     now = int(time.time())
-    diff = now - u["last_casino"]
+    diff = now - u.get("last_casino", 0)
     if diff < CASINO_COOLDOWN:
         left = CASINO_COOLDOWN - diff
         return f"🎰 {name}, відпочинь від казино! Наступна ставка через {format_time_left(left)}"
 
     dice = random.randint(1, 6)
     if dice >= 4:
-        new_len = u["length"] + bet_amount
+        new_len = cur_len + bet_amount
         db.update_casino(user.id, new_len)
         return (
             f"🎰 {name} поставив {bet_amount} см на рулетку...\n"
@@ -161,7 +165,7 @@ def do_casino(user, chat, bet_amount: int) -> str:
             f"Твій новий розмір: {new_len} см {get_badge(new_len)}"
         )
     else:
-        new_len = max(0, u["length"] - bet_amount)
+        new_len = max(0, cur_len - bet_amount)
         db.update_casino(user.id, new_len)
         return (
             f"🎰 {name} поставив {bet_amount} см на рулетку...\n"
@@ -187,16 +191,19 @@ def do_duel(attacker, defender, chat, bet_amount: int) -> str:
 
     if bet_amount <= 0:
         bet_amount = 3
-    bet_amount = min(bet_amount, 10)
+    bet_amount = min(bet_amount, 15)
 
-    if a_u["length"] < bet_amount:
-        return f"{a_name}, у тебе замало сантиметрів ({a_u['length']} см)!"
+    a_len = a_u.get("length", 0)
+    d_len = d_u.get("length", 0)
 
-    if d_u["length"] < bet_amount:
-        return f"{d_name} має замало сантиметрів для такої дуелі ({d_u['length']} см)!"
+    if a_len < bet_amount:
+        return f"{a_name}, у тебе замало сантиметрів ({a_len} см)!"
+
+    if d_len < bet_amount:
+        return f"{d_name} має замало сантиметрів для такої дуелі ({d_len} см)!"
 
     now = int(time.time())
-    diff = now - a_u["last_duel"]
+    diff = now - a_u.get("last_duel", 0)
     if diff < DUEL_COOLDOWN:
         left = DUEL_COOLDOWN - diff
         return f"🥊 {a_name}, ти нещодавно бився! Наступна дуель через {format_time_left(left)}"
@@ -212,7 +219,7 @@ def do_duel(attacker, defender, chat, bet_amount: int) -> str:
             f"🥊 <b>Дуель: {a_name} проти {d_name} на {bet_amount} см!</b>\n"
             f"🎲 Кидок: {a_name} ({d1}) vs {d_name} ({d2})\n\n"
             f"🏆 <b>Переміг {a_name}!</b> Відібрав +{bet_amount} см у суперника.\n"
-            f"📏 {a_name}: {a_u['length'] + bet_amount} см | {d_name}: {d_u['length'] - bet_amount} см"
+            f"📏 {a_name}: {a_len + bet_amount} см | {d_name}: {d_len - bet_amount} см"
         )
     else:
         db.transfer_duel(defender.id, attacker.id, bet_amount)
@@ -220,7 +227,7 @@ def do_duel(attacker, defender, chat, bet_amount: int) -> str:
             f"🥊 <b>Дуель: {a_name} проти {d_name} на {bet_amount} см!</b>\n"
             f"🎲 Кидок: {a_name} ({d1}) vs {d_name} ({d2})\n\n"
             f"💥 <b>{a_name} програв дуель!</b> {d_name} забирає +{bet_amount} см.\n"
-            f"📏 {d_name}: {d_u['length'] + bet_amount} см | {a_name}: {a_u['length'] - bet_amount} см"
+            f"📏 {d_name}: {d_len + bet_amount} см | {a_name}: {a_len - bet_amount} см"
         )
 
 # --- Handlers ---
@@ -236,13 +243,13 @@ async def handle_start(msg: Message):
         f"Привіт, {name}!\n\n"
         f"Користуйся кнопками внизу або командами в чаті:\n"
         f"• «🍆 Пісюн» — поміряти розмір раз на добу\n"
-        f"• «🎰 Казино» — гра на 5 см (або напиши: <code>ставка 10</code>)\n"
-        f"• «🥊 Дуель» — бій із другом (відповідай на повідомлення друга словом: <code>дуель 3</code>)\n"
+        f"• «🎰 Казино (5 см)» — гра на 5 см (або напиши: <code>ставка 10</code>)\n"
+        f"• «🥊 Дуель» — бій із другом (відповідай словом: <code>дуель 3</code>)\n"
         f"• «🏆 Топ 10» — рейтинг лідерів чату"
     )
     await msg.answer(text, reply_markup=get_reply_keyboard(), parse_mode="HTML")
 
-# Admin command: /give (додати собі або другу)
+# Admin command: /give
 @router.message(F.text.func(lambda t: any(k in t.lower() for k in ["give", "додати", "бонус", "накрутити"])))
 async def handle_admin_give(msg: Message):
     if msg.from_user.id not in ADMIN_IDS:
@@ -261,7 +268,7 @@ async def handle_admin_give(msg: Message):
     if msg.chat.type in ("group", "supergroup"):
         db.register_chat(msg.chat.id, target.id)
 
-    new_len = t_u["length"] + amount
+    new_len = t_u.get("length", 0) + amount
     conn = db._get_conn()
     try:
         cursor = conn.cursor()
@@ -272,7 +279,7 @@ async def handle_admin_give(msg: Message):
 
     await msg.answer(f"👑 <b>Адмін-бонус:</b> {t_name} отримав <b>+{amount} см</b>!\nТепер його розмір: <b>{new_len} см</b> {get_badge(new_len)}", parse_mode="HTML")
 
-# Admin command: /reset (скинути таймери)
+# Admin command: /reset
 @router.message(Command("reset"))
 async def handle_admin_reset(msg: Message):
     if msg.from_user.id not in ADMIN_IDS:
@@ -308,39 +315,61 @@ async def handle_my(msg: Message):
     await msg.answer(reply, reply_markup=get_reply_keyboard())
 
 # Casino Button / Command (ставка, казино, bet)
-@router.message(F.text.func(lambda t: any(k in t.lower() for k in ["казино", "ставка", "bet"])))
+@router.message(Command("casino"))
+@router.message(F.text.func(lambda t: any(k in t.lower() for k in ["казино", "ставка", "bet", "casino"])))
 async def handle_casino(msg: Message):
-    match = re.search(r'\d+', msg.text)
-    bet = int(match.group()) if match else 5
-    reply = do_casino(msg.from_user, msg.chat, bet)
-    await msg.answer(reply, reply_markup=get_reply_keyboard(), parse_mode="HTML")
+    try:
+        match = re.search(r'\d+', msg.text)
+        bet = int(match.group()) if match else 5
+        reply = do_casino(msg.from_user, msg.chat, bet)
+        await msg.answer(reply, reply_markup=get_reply_keyboard(), parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"Error in handle_casino: {e}", exc_info=True)
+        await msg.answer("⚠️ Помилка казино. Спробуйте ще раз!")
 
 # Duel Info Button / Duel execution
+@router.message(Command("duel"))
 @router.message(F.text.func(lambda t: any(k in t.lower() for k in ["дуель", "duel", "бій"])))
 async def handle_duel(msg: Message):
-    if msg.chat.type not in ("group", "supergroup"):
-        await msg.answer("🥊 Дуелі доступні тільки у спільних групах з друзями!")
-        return
+    try:
+        if msg.chat.type not in ("group", "supergroup"):
+            await msg.answer("⚔️ Дуелі доступні тільки у спільних групах з друзями!")
+            return
 
-    # Якщо просто натиснули кнопку або написали без відповіді
-    if not msg.reply_to_message or not msg.reply_to_message.from_user:
-        text = (
-            f"🥊 <b>Як викликати друга на дуель?</b>\n\n"
-            f"1. Зроби <b>відповідь (Reply)</b> на повідомлення друга в чаті.\n"
-            f"2. Напиши: <code>дуель 3</code> (або просто <code>дуель</code>).\n"
-            f"3. Переможець забере сантиметри в суперника!"
-        )
-        await msg.answer(text, reply_markup=get_reply_keyboard(), parse_mode="HTML")
-        return
+        if not msg.reply_to_message or not msg.reply_to_message.from_user:
+            text = (
+                f"⚔️ <b>Як викликати друга на дуель?</b>\n\n"
+                f"1. Зроби <b>відповідь (Reply)</b> на повідомлення друга в чаті.\n"
+                f"2. Напиши: <code>дуель 3</code> (або просто <code>дуель</code>).\n"
+                f"3. Переможець забере сантиметри в суперника!"
+            )
+            await msg.answer(text, reply_markup=get_reply_keyboard(), parse_mode="HTML")
+            return
 
-    match = re.search(r'\d+', msg.text)
-    bet = int(match.group()) if match else 3
-    reply = do_duel(msg.from_user, msg.reply_to_message.from_user, msg.chat, bet)
-    await msg.answer(reply, reply_markup=get_reply_keyboard(), parse_mode="HTML")
+        match = re.search(r'\d+', msg.text)
+        bet = int(match.group()) if match else 3
+        reply = do_duel(msg.from_user, msg.reply_to_message.from_user, msg.chat, bet)
+        await msg.answer(reply, reply_markup=get_reply_keyboard(), parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"Error in handle_duel: {e}", exc_info=True)
+        await msg.answer("⚠️ Помилка дуелі. Спробуйте ще раз!")
+
+# Help
+@router.message(Command("help"))
+async def handle_help(msg: Message):
+    text = (
+        "🎮 <b>Команди PisunBot:</b>\n\n"
+        "🍆 <b>/grow</b> — ростити свій розмір раз на добу\n"
+        "📏 <b>/my</b> — дізнатися поточний розмір і таймер\n"
+        "🎰 <b>/casino</b> (або <code>ставка 5</code>) — рулетка на см (макс 20 см)\n"
+        "⚔️ <b>/duel</b> (або <code>дуель 3</code> у відповідь другові) — бій\n"
+        "🏆 <b>/top</b> — рейтинг лідерів чату"
+    )
+    await msg.answer(text, reply_markup=get_reply_keyboard(), parse_mode="HTML")
 
 # --- Render Health Check Server ---
 async def health(request):
-    return web.Response(text="OK, PisunBot 2.0 is alive 24/7!", status=200)
+    return web.Response(text="OK, PisunBot 2.0 with Fixes is alive 24/7!", status=200)
 
 async def run_web():
     app = web.Application()
@@ -363,6 +392,20 @@ async def main():
 
     await run_web()
     await bot.delete_webhook(drop_pending_updates=True)
+    
+    # Реєстрація команд в меню Telegram
+    try:
+        await bot.set_my_commands([
+            BotCommand(command="grow", description="🍆 Ростити розмір"),
+            BotCommand(command="my", description="📏 Мій розмір"),
+            BotCommand(command="casino", description="🎰 Казино (рулетка)"),
+            BotCommand(command="duel", description="⚔️ Дуель з другом"),
+            BotCommand(command="top", description="🏆 Топ лідерів"),
+            BotCommand(command="help", description="ℹ️ Довідка та команди")
+        ])
+    except Exception as e:
+        logger.warning(f"Could not set commands menu: {e}")
+
     logger.info("Bot is polling updates!")
     try:
         await dp.start_polling(bot)
