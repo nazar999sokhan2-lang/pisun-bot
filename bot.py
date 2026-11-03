@@ -319,10 +319,56 @@ async def handle_my(msg: Message):
 @router.message(F.text.func(lambda t: any(k in t.lower() for k in ["казино", "ставка", "bet", "casino"])))
 async def handle_casino(msg: Message):
     try:
+        user = msg.from_user
+        name = user.first_name or user.username or "Гравець"
+        u = db.get_user(user.id, name, user.username)
+        if msg.chat.type in ("group", "supergroup"):
+            db.register_chat(msg.chat.id, user.id)
+
         match = re.search(r'\d+', msg.text)
         bet = int(match.group()) if match else 5
-        reply = do_casino(msg.from_user, msg.chat, bet)
-        await msg.answer(reply, reply_markup=get_reply_keyboard(), parse_mode="HTML")
+        if bet <= 0:
+            bet = 5
+        if bet > 20:
+            await msg.answer(f"{name}, максимальна ставка в казино — 20 см!")
+            return
+
+        cur_len = u.get("length", 0)
+        if cur_len < bet:
+            await msg.answer(f"{name}, у тебе замало сантиметрів! Твій розмір: {cur_len} см, а ставка: {bet} см.")
+            return
+
+        now = int(time.time())
+        diff = now - u.get("last_casino", 0)
+        if diff < CASINO_COOLDOWN:
+            left = CASINO_COOLDOWN - diff
+            await msg.answer(f"🎰 {name}, відпочинь від казино! Наступна ставка через {format_time_left(left)}")
+            return
+
+        # 1. Відправляємо справжній живий 3D-кубик Telegram
+        dice_msg = await msg.answer_dice(emoji="🎲")
+        dice_val = dice_msg.dice.value
+
+        # Чекаємо поки закінчиться анімація кидка кубика (2.5 сек)
+        await asyncio.sleep(2.5)
+
+        # 4, 5, 6 — виграш, 1, 2, 3 — програш
+        if dice_val >= 4:
+            new_len = cur_len + bet
+            db.update_casino(user.id, new_len)
+            text = (
+                f"🎉 <b>Випало {dice_val}! ПЕРЕМОГА (+{bet} см)</b> 🥳\n"
+                f"📏 {name}, твій новий розмір: <b>{new_len} см</b> {get_badge(new_len)}"
+            )
+        else:
+            new_len = max(0, cur_len - bet)
+            db.update_casino(user.id, new_len)
+            text = (
+                f"💥 <b>Випало {dice_val}... ПРОГРАШ (-{bet} см)</b> 🤏\n"
+                f"📏 {name}, твій новий розмір: <b>{new_len} см</b> {get_badge(new_len)}"
+            )
+
+        await dice_msg.reply(text, reply_markup=get_reply_keyboard(), parse_mode="HTML")
     except Exception as e:
         logger.error(f"Error in handle_casino: {e}", exc_info=True)
         await msg.answer("⚠️ Помилка казино. Спробуйте ще раз!")
