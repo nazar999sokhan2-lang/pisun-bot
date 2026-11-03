@@ -23,6 +23,9 @@ BASE_DIR = Path(__file__).resolve().parent
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 PORT = int(os.getenv("PORT", "8080"))
 
+# Admin ID (твій Telegram ID для тестів і видачі сантиметрів)
+ADMIN_IDS = [1743742401]
+
 GROW_COOLDOWN = 24 * 3600  # 24 hours
 CASINO_COOLDOWN = 5 * 60   # 5 minutes
 DUEL_COOLDOWN = 10 * 60    # 10 minutes
@@ -52,7 +55,6 @@ def format_time_left(seconds: int) -> str:
         return f"{hours} год. {mins} хв."
     return f"{mins} хв."
 
-# Clean, symmetrical 2x2 + 1 bottom panel
 def get_reply_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
@@ -240,6 +242,51 @@ async def handle_start(msg: Message):
     )
     await msg.answer(text, reply_markup=get_reply_keyboard(), parse_mode="HTML")
 
+# Admin command: /give [см] (додати собі або другу у відповідь на його повідомлення)
+@router.message(F.text.lower().regexp(r'^(?:/|!)?(?:give|додати|бонус|накрутити)\s*(\d+)$'))
+async def handle_admin_give(msg: Message):
+    if msg.from_user.id not in ADMIN_IDS:
+        return  # Тільки ти маєш право додавати сантиметри!
+
+    match = re.search(r'\d+', msg.text)
+    amount = int(match.group()) if match else 20
+
+    if msg.reply_to_message and msg.reply_to_message.from_user:
+        target = msg.reply_to_message.from_user
+    else:
+        target = msg.from_user
+
+    t_name = target.first_name or target.username or "Гравець"
+    t_u = db.get_user(target.id, t_name, target.username)
+    if msg.chat.type in ("group", "supergroup"):
+        db.register_chat(msg.chat.id, target.id)
+
+    new_len = t_u["length"] + amount
+    # Оновлюємо довжину без зміни таймера
+    conn = db._get_conn()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE users SET length = ? WHERE user_id = ?", (new_len, target.id))
+        conn.commit()
+    finally:
+        conn.close()
+
+    await msg.answer(f"👑 <b>Адмін-бонус:</b> {t_name} отримав <b>+{amount} см</b>!\nТепер його розмір: <b>{new_len} см</b> {get_badge(new_len)}", parse_mode="HTML")
+
+# Admin command: /reset (скинути таймери для миттєвого тесту)
+@router.message(Command("reset"))
+async def handle_admin_reset(msg: Message):
+    if msg.from_user.id not in ADMIN_IDS:
+        return
+    conn = db._get_conn()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE users SET last_grow = 0, last_casino = 0, last_duel = 0 WHERE user_id = ?", (msg.from_user.id,))
+        conn.commit()
+    finally:
+        conn.close()
+    await msg.answer("⚡ <b>Таймери скинуто!</b> Можна знову ростити, грати в казино та дуелитися прямо зараз.", parse_mode="HTML")
+
 # Grow
 @router.message(Command("grow"))
 @router.message(F.text.lower().in_([
@@ -306,7 +353,7 @@ async def handle_duel(msg: Message):
 
 # --- Render Health Check Server ---
 async def health(request):
-    return web.Response(text="OK, PisunBot 2.0 with Full Neat Panel is alive 24/7!", status=200)
+    return web.Response(text="OK, PisunBot 2.0 is alive 24/7!", status=200)
 
 async def run_web():
     app = web.Application()
