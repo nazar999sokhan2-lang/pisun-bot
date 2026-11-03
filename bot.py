@@ -1,6 +1,7 @@
 import os
 import sys
 import random
+import re
 import asyncio
 import logging
 import time
@@ -21,7 +22,10 @@ from database import Database
 BASE_DIR = Path(__file__).resolve().parent
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 PORT = int(os.getenv("PORT", "8080"))
-COOLDOWN_SECONDS = 24 * 3600  # 24 hours
+
+GROW_COOLDOWN = 24 * 3600  # 24 hours
+CASINO_COOLDOWN = 5 * 60   # 5 minutes
+DUEL_COOLDOWN = 10 * 60    # 10 minutes
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s]: %(message)s")
 logger = logging.getLogger("PisunBot")
@@ -29,16 +33,17 @@ logger = logging.getLogger("PisunBot")
 db = Database(BASE_DIR / "game.db")
 router = Router()
 
-# Bottom Keyboard Window (ReplyKeyboardMarkup)
-def get_reply_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="🍆 Пісюн"), KeyboardButton(text="📏 Мій розмір")],
-            [KeyboardButton(text="🏆 Топ 10")]
-        ],
-        resize_keyboard=True,
-        is_persistent=True
-    )
+def get_badge(length: int) -> str:
+    if length >= 86:
+        return "👑"
+    elif length >= 61:
+        return "🐍"
+    elif length >= 36:
+        return "🦾"
+    elif length >= 16:
+        return "🌶"
+    else:
+        return "🤏"
 
 def format_time_left(seconds: int) -> str:
     hours = seconds // 3600
@@ -47,14 +52,20 @@ def format_time_left(seconds: int) -> str:
         return f"{hours} год. {mins} хв."
     return f"{mins} хв."
 
-def roll_delta() -> int:
-    # 80% positive growth (+1..+10), 20% slight shrink (-1..-4)
-    if random.random() < 0.80:
-        return random.randint(1, 10)
-    else:
-        return -random.randint(1, 4)
+# Clean, symmetrical 2x2 + 1 bottom panel
+def get_reply_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="🍆 Пісюн"), KeyboardButton(text="📏 Мій розмір")],
+            [KeyboardButton(text="🎰 Казино (5 см)"), KeyboardButton(text="🥊 Дуель (інфо)")],
+            [KeyboardButton(text="🏆 Топ 10")]
+        ],
+        resize_keyboard=True,
+        is_persistent=True
+    )
 
-def do_grow_logic(user, chat) -> str:
+# --- Logic: Grow ---
+def do_grow(user, chat) -> str:
     name = user.first_name or user.username or "Гравець"
     u = db.get_user(user.id, name, user.username)
     if chat.type in ("group", "supergroup"):
@@ -63,20 +74,26 @@ def do_grow_logic(user, chat) -> str:
     now = int(time.time())
     diff = now - u["last_grow"]
 
-    if diff < COOLDOWN_SECONDS:
-        left = COOLDOWN_SECONDS - diff
+    if diff < GROW_COOLDOWN:
+        left = GROW_COOLDOWN - diff
         return f"{name}, ти вже міряв сьогодні! Спробуй через {format_time_left(left)}"
 
-    delta = roll_delta()
+    if random.random() < 0.80:
+        delta = random.randint(1, 10)
+    else:
+        delta = -random.randint(1, 4)
+
     new_len = max(0, u["length"] + delta)
     db.update_grow(user.id, new_len)
+    badge = get_badge(new_len)
 
     if delta >= 0:
-        return f"{name}, твій песюн виріс на {delta} см! 🎉\nТепер він {new_len} см."
+        return f"{name}, твій песюн виріс на {delta} см! 🎉\nТепер він {new_len} см {badge}"
     else:
-        return f"{name}, твій песюн зменшився на {abs(delta)} см... 🤏\nТепер він {new_len} см."
+        return f"{name}, твій песюн зменшився на {abs(delta)} см... 🤏\nТепер він {new_len} см {badge}"
 
-def do_top_logic(chat) -> str:
+# --- Logic: Top ---
+def do_top(chat) -> str:
     chat_id = chat.id if chat.type in ("group", "supergroup") else None
     top = db.get_top_in_chat(chat_id=chat_id, limit=10)
 
@@ -86,11 +103,13 @@ def do_top_logic(chat) -> str:
     lines = ["Топ 10 песюнiв:\n"]
     for i, u in enumerate(top, 1):
         display = u["display_name"] or u["username"] or "Анонім"
-        lines.append(f"{i}. {display} — {u['length']} см")
+        badge = get_badge(u["length"])
+        lines.append(f"{i}. {display} — {u['length']} см {badge}")
 
     return "\n".join(lines)
 
-def do_my_logic(user, chat) -> str:
+# --- Logic: My Size ---
+def do_my(user, chat) -> str:
     name = user.first_name or user.username or "Гравець"
     u = db.get_user(user.id, name, user.username)
     if chat.type in ("group", "supergroup"):
@@ -98,14 +117,109 @@ def do_my_logic(user, chat) -> str:
 
     now = int(time.time())
     diff = now - u["last_grow"]
+    badge = get_badge(u["length"])
 
-    if diff >= COOLDOWN_SECONDS:
+    if diff >= GROW_COOLDOWN:
         status = "можна міряти прямо зараз!"
     else:
-        left = COOLDOWN_SECONDS - diff
+        left = GROW_COOLDOWN - diff
         status = f"до виміру: {format_time_left(left)}"
 
-    return f"{name}, твій песюн зараз: {u['length']} см ({status})."
+    return f"{name}, твій песюн зараз: {u['length']} см {badge} ({status})."
+
+# --- Logic: Casino ---
+def do_casino(user, chat, bet_amount: int) -> str:
+    name = user.first_name or user.username or "Гравець"
+    u = db.get_user(user.id, name, user.username)
+    if chat.type in ("group", "supergroup"):
+        db.register_chat(chat.id, user.id)
+
+    if bet_amount <= 0:
+        return f"{name}, ставка повинна бути від 1 см! Наприклад: <code>ставка 5</code>"
+
+    if bet_amount > 15:
+        return f"{name}, максимальна ставка в казино — 15 см!"
+
+    if u["length"] < bet_amount:
+        return f"{name}, у тебе немає стільки сантиметрів! Твій розмір: {u['length']} см."
+
+    now = int(time.time())
+    diff = now - u["last_casino"]
+    if diff < CASINO_COOLDOWN:
+        left = CASINO_COOLDOWN - diff
+        return f"🎰 {name}, відпочинь від казино! Наступна ставка через {format_time_left(left)}"
+
+    dice = random.randint(1, 6)
+    if dice >= 4:
+        new_len = u["length"] + bet_amount
+        db.update_casino(user.id, new_len)
+        return (
+            f"🎰 {name} поставив {bet_amount} см на рулетку...\n"
+            f"🎉 <b>Випало {dice} — ПЕРЕМОГА (+{bet_amount} см)!</b>\n"
+            f"Твій новий розмір: {new_len} см {get_badge(new_len)}"
+        )
+    else:
+        new_len = max(0, u["length"] - bet_amount)
+        db.update_casino(user.id, new_len)
+        return (
+            f"🎰 {name} поставив {bet_amount} см на рулетку...\n"
+            f"💥 <b>Випало {dice} — ПРОГРАШ (-{bet_amount} см).</b>\n"
+            f"Твій новий розмір: {new_len} см {get_badge(new_len)}"
+        )
+
+# --- Logic: Duel ---
+def do_duel(attacker, defender, chat, bet_amount: int) -> str:
+    a_name = attacker.first_name or attacker.username or "Гравець"
+    d_name = defender.first_name or defender.username or "Гравець"
+
+    if attacker.id == defender.id:
+        return "🤔 Не можна викликати на дуель самого себе!"
+
+    if defender.is_bot:
+        return "🤖 Боти не беруть участі в дуелях!"
+
+    a_u = db.get_user(attacker.id, a_name, attacker.username)
+    d_u = db.get_user(defender.id, d_name, defender.username)
+    db.register_chat(chat.id, attacker.id)
+    db.register_chat(chat.id, defender.id)
+
+    if bet_amount <= 0:
+        bet_amount = 3
+    bet_amount = min(bet_amount, 10)
+
+    if a_u["length"] < bet_amount:
+        return f"{a_name}, у тебе замало сантиметрів для такої дуелі ({a_u['length']} см)!"
+
+    if d_u["length"] < bet_amount:
+        return f"{d_name} занадто малий для такої ставки ({d_u['length']} см)!"
+
+    now = int(time.time())
+    diff = now - a_u["last_duel"]
+    if diff < DUEL_COOLDOWN:
+        left = DUEL_COOLDOWN - diff
+        return f"🥊 {a_name}, ти нещодавно бився! Наступна дуель через {format_time_left(left)}"
+
+    d1 = random.randint(1, 10)
+    d2 = random.randint(1, 10)
+    while d1 == d2:
+        d2 = random.randint(1, 10)
+
+    if d1 > d2:
+        db.transfer_duel(attacker.id, defender.id, bet_amount)
+        return (
+            f"🥊 <b>Дуель: {a_name} проти {d_name} на {bet_amount} см!</b>\n"
+            f"🎲 Кидок: {a_name} ({d1}) vs {d_name} ({d2})\n\n"
+            f"🏆 <b>Переміг {a_name}!</b> Відібрав +{bet_amount} см у суперника.\n"
+            f"📏 {a_name}: {a_u['length'] + bet_amount} см | {d_name}: {d_u['length'] - bet_amount} см"
+        )
+    else:
+        db.transfer_duel(defender.id, attacker.id, bet_amount)
+        return (
+            f"🥊 <b>Дуель: {a_name} проти {d_name} на {bet_amount} см!</b>\n"
+            f"🎲 Кидок: {a_name} ({d1}) vs {d_name} ({d2})\n\n"
+            f"💥 <b>{a_name} програв дуель!</b> {d_name} забирає +{bet_amount} см.\n"
+            f"📏 {d_name}: {d_u['length'] + bet_amount} см | {a_name}: {a_u['length'] - bet_amount} см"
+        )
 
 # --- Handlers ---
 @router.message(CommandStart())
@@ -118,42 +232,81 @@ async def handle_start(msg: Message):
 
     text = (
         f"Привіт, {name}!\n\n"
-        f"Тисни кнопку «🍆 Пісюн» нижче, щоб поміряти розмір раз на добу.\n"
-        f"Тисни «🏆 Топ 10», щоб переглянути рейтинг чату!"
+        f"Користуйся зручними кнопками внизу або командами в чаті:\n\n"
+        f"• «🍆 Пісюн» — поміряти розмір раз на добу\n"
+        f"• «🎰 Казино» — швидка ставка 5 см (або напиши: <code>ставка 10</code>)\n"
+        f"• «🥊 Дуель» — бій із другом (відповідай на повідомлення друга словом: <code>дуель 3</code>)\n"
+        f"• «🏆 Топ 10» — рейтинг лідерів чату"
     )
-    await msg.answer(text, reply_markup=get_reply_keyboard())
+    await msg.answer(text, reply_markup=get_reply_keyboard(), parse_mode="HTML")
 
-# Grow triggers: /grow, 🍆 Пісюн, пісюн, !пісюн, песюн, !песюн
+# Grow
 @router.message(Command("grow"))
 @router.message(F.text.lower().in_([
     "🍆 пісюн", "пісюн", "!пісюн", "/пісюн", 
-    "песюн", "!песюн", "/песюн", "ростити", "🍆 ростити", "поміряти", "🍆 поміряти"
+    "песюн", "!песюн", "/песюн", "ростити", "поміряти"
 ]))
 async def handle_grow(msg: Message):
-    reply = do_grow_logic(msg.from_user, msg.chat)
+    reply = do_grow(msg.from_user, msg.chat)
     await msg.answer(reply, reply_markup=get_reply_keyboard())
 
-# Top triggers: /top, 🏆 Топ 10, топ, !топ, топ 10, !топ 10
+# Top
 @router.message(Command("top"))
 @router.message(F.text.lower().in_([
-    "🏆 топ 10", "топ 10", "!топ 10", "топ", "!топ", "/топ", "🏆 топ гравців", "топ гравців"
+    "🏆 топ 10", "топ 10", "!топ 10", "топ", "!топ", "/топ"
 ]))
 async def handle_top(msg: Message):
-    reply = do_top_logic(msg.chat)
+    reply = do_top(msg.chat)
     await msg.answer(reply, reply_markup=get_reply_keyboard())
 
-# My size triggers: /my, 📏 Мій розмір, розмір, !розмір
+# My Size
 @router.message(Command("my"))
 @router.message(F.text.lower().in_([
-    "📏 мій розмір", "мій розмір", "розмір", "!розмір", "/розмір", "мій песюн", "мій пісюн"
+    "📏 мій розмір", "мій розмір", "розмір", "!розмір", "/розмір", "мій песюн"
 ]))
 async def handle_my(msg: Message):
-    reply = do_my_logic(msg.from_user, msg.chat)
+    reply = do_my(msg.from_user, msg.chat)
     await msg.answer(reply, reply_markup=get_reply_keyboard())
+
+# Casino Button / Command
+@router.message(F.text == "🎰 Казино (5 см)")
+@router.message(F.text.lower().regexp(r'^(?:!|/)?(?:ставка|казино|bet)\s*(\d+)?$'))
+async def handle_casino(msg: Message):
+    match = re.search(r'\d+', msg.text)
+    bet = int(match.group()) if match else 5
+    reply = do_casino(msg.from_user, msg.chat, bet)
+    await msg.answer(reply, reply_markup=get_reply_keyboard(), parse_mode="HTML")
+
+# Duel Info Button
+@router.message(F.text == "🥊 Дуель (інфо)")
+async def handle_duel_info(msg: Message):
+    text = (
+        f"🥊 <b>Як викликати друга на дуель?</b>\n\n"
+        f"1. Зроби <b>відповідь (Reply)</b> на будь-яке повідомлення друга в чаті.\n"
+        f"2. Напиши слово: <code>дуель 3</code> (або просто <code>дуель</code>).\n"
+        f"3. Бот кине кубики — переможець відбере сантиметри в суперника!"
+    )
+    await msg.answer(text, reply_markup=get_reply_keyboard(), parse_mode="HTML")
+
+# Duel execution (Reply to another user)
+@router.message(F.text.lower().regexp(r'^(?:!|/)?(?:дуель|duel|бій)\s*(\d+)?$'))
+async def handle_duel(msg: Message):
+    if msg.chat.type not in ("group", "supergroup"):
+        await msg.answer("🥊 Дуелі доступні тільки у спільних групах з друзями!")
+        return
+
+    if not msg.reply_to_message or not msg.reply_to_message.from_user:
+        await msg.answer("⚠️ Щоб викликати когось на дуель, пиши <code>дуель</code> у відповідь (Reply) на його повідомлення!", parse_mode="HTML")
+        return
+
+    match = re.search(r'\d+', msg.text)
+    bet = int(match.group()) if match else 3
+    reply = do_duel(msg.from_user, msg.reply_to_message.from_user, msg.chat, bet)
+    await msg.answer(reply, reply_markup=get_reply_keyboard(), parse_mode="HTML")
 
 # --- Render Health Check Server ---
 async def health(request):
-    return web.Response(text="OK, PisunBot 2.0 with Bottom Keyboard is alive 24/7!", status=200)
+    return web.Response(text="OK, PisunBot 2.0 with Full Neat Panel is alive 24/7!", status=200)
 
 async def run_web():
     app = web.Application()
