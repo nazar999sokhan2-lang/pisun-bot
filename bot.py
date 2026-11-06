@@ -14,17 +14,18 @@ from aiogram.filters import CommandStart, Command
 from aiogram.types import (
     Message,
     CallbackQuery,
-    ReplyKeyboardMarkup,
-    KeyboardButton,
+    ReplyKeyboardRemove,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     BotCommand
 )
 
+from dotenv import load_dotenv
 from database import Database
 
 # --- Config ---
 BASE_DIR = Path(__file__).resolve().parent
+load_dotenv(BASE_DIR / ".env")
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 PORT = int(os.getenv("PORT", "8080"))
 
@@ -64,15 +65,7 @@ def format_time_left(seconds: int) -> str:
         return f"{mins} хв. {secs} сек."
     return f"{secs} сек."
 
-def get_main_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="🍆 Ростити"), KeyboardButton(text="📏 Мій розмір")],
-            [KeyboardButton(text="🎰 Казино"), KeyboardButton(text="🏆 Топ 10")]
-        ],
-        resize_keyboard=True,
-        is_persistent=True
-    )
+REMOVE_KB = ReplyKeyboardRemove()
 
 def get_casino_inline_keyboard(user_length: int) -> InlineKeyboardMarkup:
     """Швидкі кнопки ставок"""
@@ -279,7 +272,7 @@ async def play_casino_round(bot: Bot, chat_id: int, user, game_type: str, bet: i
             f"📏 {name}, твій новий розмір: <b>{new_len} см</b> {get_badge(new_len)}"
         )
 
-    await dice_msg.reply(text, reply_markup=get_main_keyboard(), parse_mode="HTML")
+    await dice_msg.reply(text, reply_markup=REMOVE_KB, parse_mode="HTML")
 
 # --- Handlers ---
 
@@ -298,25 +291,25 @@ async def handle_start(msg: Message):
         f"• «⚔️ <b>Дуель</b>» — відповідай на повідомлення друга словом: <code>дуель 5</code>\n"
         f"• «🏆 <b>Топ 10</b>» — рейтинг лідерів чату"
     )
-    await msg.answer(text, reply_markup=get_main_keyboard(), parse_mode="HTML")
+    await msg.answer(text, reply_markup=REMOVE_KB, parse_mode="HTML")
 
 @router.message(Command("grow"))
 @router.message(F.text.func(lambda t: t and any(k in t.lower() for k in ["ростити", "пісюн", "песюн", "поміряти"])))
 async def handle_grow(msg: Message):
     reply = do_grow(msg.from_user, msg.chat)
-    await msg.answer(reply, reply_markup=get_main_keyboard(), parse_mode="HTML")
+    await msg.answer(reply, reply_markup=REMOVE_KB, parse_mode="HTML")
 
 @router.message(Command("my"))
 @router.message(F.text.func(lambda t: t and any(k in t.lower() for k in ["розмір", "мій розмір", "мій песюн", "мій пісюн"])))
 async def handle_my(msg: Message):
     reply = do_my(msg.from_user, msg.chat)
-    await msg.answer(reply, reply_markup=get_main_keyboard(), parse_mode="HTML")
+    await msg.answer(reply, reply_markup=REMOVE_KB, parse_mode="HTML")
 
 @router.message(Command("top"))
 @router.message(F.text.func(lambda t: t and any(k in t.lower() for k in ["топ", "лідери", "top"])))
 async def handle_top(msg: Message):
     reply = do_top(msg.chat)
-    await msg.answer(reply, reply_markup=get_main_keyboard(), parse_mode="HTML")
+    await msg.answer(reply, reply_markup=REMOVE_KB, parse_mode="HTML")
 
 # --- Casino Menu & Text Bets ---
 @router.message(Command("casino"))
@@ -384,13 +377,13 @@ async def handle_duel(msg: Message):
             f"2. Напиши: <code>дуель 5</code> (або просто <code>дуель</code>).\n"
             f"3. Бот кине кубики і визначить переможця!"
         )
-        await msg.answer(text, reply_markup=get_main_keyboard(), parse_mode="HTML")
+        await msg.answer(text, reply_markup=REMOVE_KB, parse_mode="HTML")
         return
 
     match = re.search(r'\d+', msg.text)
     bet = int(match.group()) if match else 3
     reply = do_duel(msg.from_user, msg.reply_to_message.from_user, msg.chat, bet)
-    await msg.answer(reply, reply_markup=get_main_keyboard(), parse_mode="HTML")
+    await msg.answer(reply, reply_markup=REMOVE_KB, parse_mode="HTML")
 
 # --- Admin Handlers ---
 @router.message(Command("give"))
@@ -459,8 +452,8 @@ async def run_web():
 
 # --- Main Entrypoint ---
 async def main():
-    if not BOT_TOKEN:
-        logger.error("BOT_TOKEN is missing in environment!")
+    if not BOT_TOKEN or BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
+        logger.error("BOT_TOKEN is missing in environment or .env! Будь ласка, вкажіть ваш токен бота у файлі .env")
         sys.exit(1)
 
     bot = Bot(token=BOT_TOKEN)
